@@ -1,409 +1,254 @@
 #!/usr/bin/env python3
 """
-Marketplace Monitor v2 - Cloud-Ready Edition
-Monitors Craigslist and Facebook Marketplace for underpriced items.
-Designed to run 24/7 on cloud servers (Heroku, Railway, AWS, etc.)
+Marketplace Monitor v2 - Cloud Edition
+Automated deal hunting for diabetic supplies and phones
+NYC/NJ Area Focus
 """
 
-import json
-import time
+import feedparser
 import smtplib
-import os
+import time
 import logging
-from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
-import requests
-from bs4 import BeautifulSoup
-import feedparser
+from urllib.parse import quote
+import os
+from datetime import datetime
 
-# ============================================================================
-# LOGGING SETUP
-# ============================================================================
-
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# CONFIGURATION - Load from Environment Variables
-# ============================================================================
+# Configuration
+MONITOR_EMAIL = os.getenv('MONITOR_EMAIL', 'your_email@gmail.com')
+MONITOR_EMAIL_PASSWORD = os.getenv('MONITOR_EMAIL_PASSWORD', 'your_app_password')
+MONITOR_RECIPIENT = os.getenv('MONITOR_RECIPIENT', 'your_email@gmail.com')
 
-# Email configuration
-EMAIL_CONFIG = {
-    "sender": os.getenv("MONITOR_EMAIL", "your_email@gmail.com"),
-    "password": os.getenv("MONITOR_EMAIL_PASSWORD", "your_app_password"),
-    "recipient": os.getenv("MONITOR_RECIPIENT", "your_email@gmail.com"),
-    "smtp_server": "smtp.gmail.com",
-    "smtp_port": 587,
-}
-
-# Pricing thresholds
-PRICING_TARGETS = {
-    "dexcom_g6": {"max_buy": 35, "resale_avg": 90, "margin": 0.60},
-    "dexcom_g7": {"max_buy": 45, "resale_avg": 120, "margin": 0.60},
-    "omnipod_5": {"max_buy": 100, "resale_avg": 200, "margin": 0.50},
-    "omnipod_dash": {"max_buy": 90, "resale_avg": 180, "margin": 0.50},
-    "freestyle_libre": {"max_buy": 30, "resale_avg": 80, "margin": 0.60},
-    "test_strips": {"max_buy": 20, "resale_avg": 50, "margin": 0.60},
-    "iphone_15": {"max_buy": 300, "resale_avg": 400, "margin": 0.25},
-    "iphone_14_pro": {"max_buy": 350, "resale_avg": 500, "margin": 0.30},
-    "iphone_13": {"max_buy": 250, "resale_avg": 350, "margin": 0.30},
-}
-
-# Keywords to monitor
-SEARCH_KEYWORDS = {
-    "diabetic_supplies": [
-        "Dexcom G6", "Dexcom G7", "Omnipod 5", "Omnipod DASH",
-        "Freestyle Libre", "Test Strips", "Glucose Monitor", "Insulin Pump",
-        "CGM", "Continuous Glucose Monitor"
-    ],
-    "phones": [
-        "iPhone 15", "iPhone 14 Pro", "iPhone 13 Pro",
-        "Samsung S23", "Pixel 8", "OnePlus 12"
-    ]
-}
-
-# Craigslist cities to monitor - NYC Area & 70 Mile Radius of Union, NJ
+# Craigslist cities to monitor (NYC/NJ area)
 CRAIGSLIST_CITIES = [
-    "newyork",      # Manhattan, Brooklyn, Queens, Bronx, Staten Island
-    "newjersey",    # Union, Newark, Jersey City, and surrounding areas
-    "longisland",   # Long Island (Queens, Nassau, Suffolk)
-    "connecticut",  # Stamford, Bridgeport, and surrounding areas
+    "newyork",      # NYC
+    "newjersey",    # New Jersey
+    "longisland",   # Long Island
+    "connecticut",  # Connecticut
 ]
 
-# ============================================================================
-# DATA STRUCTURES
-# ============================================================================
+# Search keywords for diabetic supplies and phones
+SEARCH_KEYWORDS = {
+    # Diabetic supplies
+    "dexcom_g6": "Dexcom G6",
+    "dexcom_g7": "Dexcom G7",
+    "omnipod_5": "Omnipod 5",
+    "omnipod_dash": "Omnipod DASH",
+    "freestyle_libre": "Freestyle Libre",
+    "test_strips": "Test Strips",
+    "glucose_monitor": "Glucose Monitor",
+    # Phones
+    "iphone_15": "iPhone 15",
+    "iphone_14_pro": "iPhone 14 Pro",
+    "iphone_13_pro": "iPhone 13 Pro",
+    "samsung_s23": "Samsung S23",
+    "pixel_8": "Pixel 8",
+    "oneplus_12": "OnePlus 12",
+}
 
-@dataclass
-class Listing:
-    """Represents a marketplace listing."""
-    id: str
-    title: str
-    price: float
-    url: str
-    platform: str  # "craigslist" or "facebook"
-    posted_time: str
-    location: str
-    condition: Optional[str] = None
-    
-    def to_dict(self):
-        return asdict(self)
+# Pricing targets (max buy price to achieve target margin)
+PRICING_TARGETS = {
+    "dexcom_g6": {"max_buy": 35, "resale_avg": 90, "margin": 0.60},
+    "dexcom_g7": {"max_buy": 40, "resale_avg": 100, "margin": 0.60},
+    "omnipod_5": {"max_buy": 50, "resale_avg": 120, "margin": 0.58},
+    "omnipod_dash": {"max_buy": 45, "resale_avg": 110, "margin": 0.59},
+    "freestyle_libre": {"max_buy": 25, "resale_avg": 65, "margin": 0.62},
+    "test_strips": {"max_buy": 15, "resale_avg": 45, "margin": 0.67},
+    "glucose_monitor": {"max_buy": 30, "resale_avg": 80, "margin": 0.63},
+    "iphone_15": {"max_buy": 450, "resale_avg": 650, "margin": 0.31},
+    "iphone_14_pro": {"max_buy": 350, "resale_avg": 550, "margin": 0.36},
+    "iphone_13_pro": {"max_buy": 280, "resale_avg": 450, "margin": 0.38},
+    "samsung_s23": {"max_buy": 300, "resale_avg": 500, "margin": 0.40},
+    "pixel_8": {"max_buy": 320, "resale_avg": 550, "margin": 0.42},
+    "oneplus_12": {"max_buy": 280, "resale_avg": 480, "margin": 0.42},
+}
 
-@dataclass
-class Deal:
-    """Represents a deal opportunity."""
-    listing: Listing
-    target_item: str
-    max_buy_price: float
-    profit_potential: float
-    margin_percentage: float
-    found_at: str = None
-    
-    def __post_init__(self):
-        if not self.found_at:
-            self.found_at = datetime.now().isoformat()
+# Track found deals to avoid duplicates
+FOUND_DEALS = set()
 
-# ============================================================================
-# MARKETPLACE SCRAPERS
-# ============================================================================
-
-class CraigslistScraper:
-    """Scrapes Craigslist for listings."""
-    
-    @staticmethod
-    def search(city: str, keywords: List[str], max_price: int = 500) -> List[Listing]:
-        """
-        Search Craigslist for listings.
-        Uses RSS feeds (no scraping needed, avoids blocking).
-        """
-        listings = []
+def send_email(subject, body):
+    """Send email notification"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = MONITOR_EMAIL
+        msg['To'] = MONITOR_RECIPIENT
+        msg['Subject'] = subject
         
-        for keyword in keywords:
-            try:
-                # Craigslist RSS feed URL
-                # For NYC: newyork covers all 5 boroughs
-                # For NJ: newjersey covers Union and surrounding areas
-                # For Long Island: longisland covers Queens, Nassau, Suffolk
-                # For CT: connecticut covers Stamford, Bridgeport, etc.
-                url = f"https://{city}.craigslist.org/search/sss?query={keyword}&sort=date&format=rss"
-                
-                # Fetch and parse RSS feed
-                feed = feedparser.parse(url)
-                
-                for entry in feed.entries[:10]:  # Get top 10 results
-                    try:
-                        # Extract price from title (Craigslist format: "Title - $price")
-                        title = entry.title
-                        price_str = title.split("$")[-1].split()[0] if "$" in title else "0"
-                        price = float(price_str)
+        msg.attach(MIMEText(body, 'html'))
+        
+        # Gmail SMTP
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.login(MONITOR_EMAIL, MONITOR_EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        
+        logger.info(f"📧 Email sent: {subject}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Email error: {e}")
+        return False
+
+def scrape_craigslist(city, keyword, keyword_id):
+    """Scrape Craigslist RSS feed for listings"""
+    try:
+        # Properly encode the search query
+        encoded_keyword = quote(keyword)
+        url = f"https://{city}.craigslist.org/search/sss?query={encoded_keyword}&sort=date&format=rss"
+        
+        feed = feedparser.parse(url)
+        deals = []
+        
+        if feed.entries:
+            for entry in feed.entries:
+                try:
+                    title = entry.get('title', '')
+                    price_text = entry.get('summary', '')
+                    link = entry.get('link', '')
+                    
+                    # Extract price from title (format: "$XXX")
+                    price = None
+                    if '$' in title:
+                        price_str = title.split('$')[1].split()[0]
+                        try:
+                            price = float(price_str)
+                        except:
+                            pass
+                    
+                    if price and keyword_id in PRICING_TARGETS:
+                        target = PRICING_TARGETS[keyword_id]
+                        max_buy = target['max_buy']
+                        resale_avg = target['resale_avg']
+                        margin = target['margin']
                         
-                        if price <= max_price:
-                            listing = Listing(
-                                id=f"cl_{city}_{entry.id}",
-                                title=title.split(" - ")[0],  # Remove price from title
-                                price=price,
-                                url=entry.link,
-                                platform="craigslist",
-                                posted_time=entry.published,
-                                location=city.title(),
-                            )
-                            listings.append(listing)
-                    except (ValueError, IndexError, AttributeError):
-                        continue
-                
-                logger.info(f"✅ Craigslist {city.title()}: Found {len(listings)} listings for '{keyword}'")
-            
-            except Exception as e:
-                logger.error(f"❌ Craigslist scrape error for {city}/{keyword}: {e}")
+                        # Check if price is below our target
+                        if price <= max_buy:
+                            profit = resale_avg - price
+                            profit_margin = (profit / resale_avg) * 100
+                            
+                            deal_id = f"{city}_{keyword_id}_{price}_{title[:20]}"
+                            if deal_id not in FOUND_DEALS:
+                                FOUND_DEALS.add(deal_id)
+                                deals.append({
+                                    'title': title,
+                                    'price': price,
+                                    'max_buy': max_buy,
+                                    'resale_avg': resale_avg,
+                                    'profit': profit,
+                                    'margin': profit_margin,
+                                    'location': city,
+                                    'link': link,
+                                    'keyword': keyword
+                                })
+                except Exception as e:
+                    logger.debug(f"Error parsing entry: {e}")
         
-        return listings
-
-class FacebookMarketplaceScraper:
-    """
-    Scrapes Facebook Marketplace for listings.
-    Note: Facebook actively blocks scrapers. For production, consider:
-    - Using Facebook Graph API (requires approval)
-    - Using a third-party service (ScraperAPI, Bright Data)
-    - Manual monitoring with alerts
-    """
-    
-    @staticmethod
-    def search(keywords: List[str], location: str = "US", max_price: int = 500) -> List[Listing]:
-        """
-        Placeholder for Facebook Marketplace scraping.
-        In production, use Selenium or a scraping service.
-        """
-        logger.warning("⚠️ Facebook Marketplace scraping requires Selenium or API access")
+        return deals
+    except Exception as e:
+        logger.error(f"❌ Craigslist scrape error for {city}/{keyword}: {e}")
         return []
 
-# ============================================================================
-# MONITORING LOGIC
-# ============================================================================
+def send_deal_alert(deal):
+    """Send email alert for a found deal"""
+    subject = f"🎯 New Deal Found! {deal['keyword']} - ${deal['price']:.2f}"
+    
+    body = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif;">
+            <h2 style="color: #2ecc71;">🎯 New Deal Found!</h2>
+            
+            <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
+                <tr style="background-color: #f0f0f0;">
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Title</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">{deal['title']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Price</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b style="color: #e74c3c;">${deal['price']:.2f}</b></td>
+                </tr>
+                <tr style="background-color: #f0f0f0;">
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Max Buy</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${deal['max_buy']:.2f}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Resale Avg</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">${deal['resale_avg']:.2f}</td>
+                </tr>
+                <tr style="background-color: #f0f0f0;">
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Profit Potential</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b style="color: #27ae60;">${deal['profit']:.2f} ({deal['margin']:.1f}%)</b></td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Location</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">{deal['location'].upper()}</td>
+                </tr>
+                <tr style="background-color: #f0f0f0;">
+                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Posted</b></td>
+                    <td style="padding: 10px; border: 1px solid #ddd;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
+                </tr>
+            </table>
+            
+            <p style="margin-top: 20px;">
+                <a href="{deal['link']}" style="background-color: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                    View Listing →
+                </a>
+            </p>
+            
+            <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+            <p style="color: #7f8c8d; font-size: 12px;">
+                Automated deal alert from Marketplace Monitor
+            </p>
+        </body>
+    </html>
+    """
+    
+    send_email(subject, body)
 
-class MarketplaceMonitor:
-    """Main monitoring class."""
+def monitor_cycle():
+    """Run one monitoring cycle"""
+    logger.info("🚀 Marketplace Monitor v2 - Cloud Edition")
+    logger.info("📍 Monitoring Craigslist (NYC + 70 mile radius of Union, NJ)...")
     
-    def __init__(self):
-        self.listings_seen = set()
-        self.deals_found = []
-        self.last_check = {}
-        
-    def check_price_match(self, price: float, item_key: str) -> Optional[Dict]:
-        """Check if a price matches our buying criteria."""
-        if item_key not in PRICING_TARGETS:
-            return None
-        
-        target = PRICING_TARGETS[item_key]
-        if price <= target["max_buy"]:
-            return {
-                "item": item_key,
-                "max_buy": target["max_buy"],
-                "resale_avg": target["resale_avg"],
-                "profit": target["resale_avg"] - price,
-                "margin": (target["resale_avg"] - price) / target["resale_avg"],
-            }
-        return None
+    total_deals = 0
     
-    def match_keywords(self, title: str, keywords: List[str]) -> Optional[str]:
-        """Match listing title against keywords."""
-        title_lower = title.lower()
-        for keyword in keywords:
-            if keyword.lower() in title_lower:
-                return keyword
-        return None
+    for city in CRAIGSLIST_CITIES:
+        for keyword_id, keyword in SEARCH_KEYWORDS.items():
+            deals = scrape_craigslist(city, keyword, keyword_id)
+            
+            if deals:
+                logger.info(f"✅ {city.upper()}: Found {len(deals)} deal(s) for {keyword}")
+                for deal in deals:
+                    send_deal_alert(deal)
+                    total_deals += 1
     
-    def evaluate_listing(self, listing: Listing) -> Optional[Deal]:
-        """Evaluate if a listing is a good deal."""
-        # Check diabetic supplies
-        matched_keyword = self.match_keywords(listing.title, SEARCH_KEYWORDS["diabetic_supplies"])
-        if matched_keyword:
-            item_key = matched_keyword.lower().replace(" ", "_")
-            price_match = self.check_price_match(listing.price, item_key)
-            if price_match:
-                return Deal(
-                    listing=listing,
-                    target_item=matched_keyword,
-                    max_buy_price=price_match["max_buy"],
-                    profit_potential=price_match["profit"],
-                    margin_percentage=price_match["margin"],
-                )
-        
-        # Check phones
-        matched_keyword = self.match_keywords(listing.title, SEARCH_KEYWORDS["phones"])
-        if matched_keyword:
-            item_key = matched_keyword.lower().replace(" ", "_")
-            price_match = self.check_price_match(listing.price, item_key)
-            if price_match:
-                return Deal(
-                    listing=listing,
-                    target_item=matched_keyword,
-                    max_buy_price=price_match["max_buy"],
-                    profit_potential=price_match["profit"],
-                    margin_percentage=price_match["margin"],
-                )
-        
-        return None
+    if total_deals == 0:
+        logger.info("ℹ️ No deals found this cycle")
     
-    def send_alert(self, deals: List[Deal]):
-        """Send email alert with found deals."""
-        if not deals:
-            return
-        
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"🎯 {len(deals)} New Deal(s) Found!"
-            msg["From"] = EMAIL_CONFIG["sender"]
-            msg["To"] = EMAIL_CONFIG["recipient"]
-            
-            # Build email body
-            text_body = f"Found {len(deals)} potential deal(s):\n\n"
-            html_body = f"""
-            <html>
-                <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-                    <div style="max-width: 600px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px;">
-                        <h2 style="color: #16a34a;">🎯 {len(deals)} New Deal(s) Found!</h2>
-                        <p style="color: #666;">Check these listings immediately:</p>
-            """
-            
-            for deal in deals:
-                listing = deal.listing
-                text_body += f"""
-Title: {listing.title}
-Price: ${listing.price:.2f}
-Max Buy: ${deal.max_buy_price:.2f}
-Profit Potential: ${deal.profit_potential:.2f} ({deal.margin_percentage*100:.1f}%)
-Location: {listing.location}
-Platform: {listing.platform}
-Posted: {listing.posted_time}
-URL: {listing.url}
----
-"""
-                
-                html_body += f"""
-                <div style="border: 2px solid #16a34a; padding: 15px; margin: 15px 0; border-radius: 5px; background-color: #f9fafb;">
-                    <h3 style="margin-top: 0; color: #1f2937;">{listing.title}</h3>
-                    <p><strong>Price:</strong> <span style="font-size: 18px; color: #dc2626;">${listing.price:.2f}</span></p>
-                    <p><strong>Max Buy:</strong> ${deal.max_buy_price:.2f}</p>
-                    <p><strong>Profit Potential:</strong> <span style="color: #16a34a; font-weight: bold;">${deal.profit_potential:.2f} ({deal.margin_percentage*100:.1f}%)</span></p>
-                    <p><strong>Location:</strong> {listing.location}</p>
-                    <p><strong>Platform:</strong> {listing.platform.title()}</p>
-                    <p><strong>Posted:</strong> {listing.posted_time}</p>
-                    <p><a href="{listing.url}" style="display: inline-block; background-color: #16a34a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; font-weight: bold;">View Listing →</a></p>
-                </div>
-"""
-            
-            html_body += """
-                    </div>
-                </body>
-            </html>
-            """
-            
-            # Attach both versions
-            msg.attach(MIMEText(text_body, "plain"))
-            msg.attach(MIMEText(html_body, "html"))
-            
-            # Send email
-            with smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"]) as server:
-                server.starttls()
-                server.login(EMAIL_CONFIG["sender"], EMAIL_CONFIG["password"])
-                server.send_message(msg)
-            
-            logger.info(f"✅ Alert sent for {len(deals)} deal(s)")
-        
-        except Exception as e:
-            logger.error(f"❌ Failed to send email alert: {e}")
-    
-    def monitor_cycle(self):
-        """Run one monitoring cycle."""
-        logger.info("=" * 70)
-        logger.info(f"🔍 Starting monitoring cycle at {datetime.now().isoformat()}")
-        logger.info("=" * 70)
-        
-        deals_this_cycle = []
-        
-        # Monitor Craigslist - NYC & NJ Area
-        logger.info("📍 Monitoring Craigslist (NYC + 70 mile radius of Union, NJ)...")
-        for city in CRAIGSLIST_CITIES:
-            listings = CraigslistScraper.search(
-                city,
-                SEARCH_KEYWORDS["diabetic_supplies"] + SEARCH_KEYWORDS["phones"],
-                max_price=600  # Slightly higher for NYC area (higher prices)
-            )
-            
-            for listing in listings:
-                if listing.id not in self.listings_seen:
-                    self.listings_seen.add(listing.id)
-                    deal = self.evaluate_listing(listing)
-                    if deal:
-                        deals_this_cycle.append(deal)
-                        logger.info(f"✅ Deal found: {deal.listing.title} @ ${deal.listing.price}")
-        
-        # Monitor Facebook Marketplace (placeholder)
-        logger.info("📍 Facebook Marketplace monitoring (requires API setup)...")
-        
-        # Send alerts if deals found
-        if deals_this_cycle:
-            logger.info(f"📧 Sending alerts for {len(deals_this_cycle)} deal(s)...")
-            self.send_alert(deals_this_cycle)
-            self.deals_found.extend(deals_this_cycle)
-        else:
-            logger.info("ℹ️ No deals found this cycle")
-        
-        logger.info(f"✅ Cycle complete. Total deals found: {len(self.deals_found)}")
-
-# ============================================================================
-# MAIN
-# ============================================================================
+    logger.info(f"✅ Cycle complete. Total deals found: {total_deals}")
+    logger.info("⏳ Next check in 5 minutes...")
 
 def main():
-    """Main entry point."""
-    logger.info("=" * 70)
-    logger.info("🚀 Marketplace Monitor v2 - Cloud Edition")
-    logger.info("=" * 70)
-    logger.info(f"Monitoring {len(SEARCH_KEYWORDS['diabetic_supplies'])} diabetic supply keywords")
-    logger.info(f"Monitoring {len(SEARCH_KEYWORDS['phones'])} phone keywords")
-    logger.info(f"Monitoring {len(CRAIGSLIST_CITIES)} Craigslist regions: NYC (all boroughs) + 70 mile radius of Union, NJ")
-    logger.info("=" * 70)
+    """Main monitoring loop"""
+    logger.info("🚀 Starting Marketplace Monitor...")
+    logger.info(f"📧 Email notifications: {MONITOR_RECIPIENT}")
     
-    monitor = MarketplaceMonitor()
-    
-    # Run monitoring cycles
-    cycle_count = 0
-    try:
-        while True:
-            cycle_count += 1
-            monitor.monitor_cycle()
-            
-            # Wait 5 minutes before next check (adjust as needed)
-            logger.info(f"⏳ Next check in 5 minutes...")
-            time.sleep(300)  # 5 minutes
-    
-    except KeyboardInterrupt:
-        logger.info(f"\n\n📊 Monitoring stopped after {cycle_count} cycles")
-        logger.info(f"Total deals found: {len(monitor.deals_found)}")
-        
-        # Save deals to file
-        if monitor.deals_found:
-            with open("deals_found.json", "w") as f:
-                deals_data = [
-                    {
-                        "listing": deal.listing.to_dict(),
-                        "target_item": deal.target_item,
-                        "max_buy_price": deal.max_buy_price,
-                        "profit_potential": deal.profit_potential,
-                        "margin_percentage": deal.margin_percentage,
-                        "found_at": deal.found_at,
-                    }
-                    for deal in monitor.deals_found
-                ]
-                json.dump(deals_data, f, indent=2)
-            logger.info(f"✅ Deals saved to deals_found.json")
+    while True:
+        try:
+            monitor_cycle()
+            time.sleep(300)  # Check every 5 minutes
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error in monitoring cycle: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying
 
 if __name__ == "__main__":
     main()
