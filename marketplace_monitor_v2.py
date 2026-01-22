@@ -1,31 +1,20 @@
 #!/usr/bin/env python3
 """
-Marketplace Monitor v3 - Cloud Edition with Facebook Marketplace
-Automated deal hunting for diabetic supplies and phones
-NYC/NJ Area Focus - Craigslist + Facebook Marketplace
+Marketplace Monitor v4 - Final Edition
+Automated deal hunting for diabetic supplies only
+NYC/NJ Area Focus
+Uses exact pricing from HMH Med Supply Buyback & Sunny Med Wholesale
 """
 
 import feedparser
 import smtplib
 import time
 import logging
-import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from urllib.parse import quote
+import os
 from datetime import datetime
-
-# Try to import Selenium for Facebook Marketplace
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.chrome.options import Options
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-    logging.warning("Selenium not available - Facebook Marketplace monitoring disabled")
 
 # Configure logging
 logging.basicConfig(
@@ -38,8 +27,6 @@ logger = logging.getLogger(__name__)
 MONITOR_EMAIL = os.getenv('MONITOR_EMAIL', 'your_email@gmail.com')
 MONITOR_EMAIL_PASSWORD = os.getenv('MONITOR_EMAIL_PASSWORD', 'your_app_password')
 MONITOR_RECIPIENT = os.getenv('MONITOR_RECIPIENT', 'your_email@gmail.com')
-FACEBOOK_EMAIL = os.getenv('FACEBOOK_EMAIL', '')  # Optional: for Facebook login
-FACEBOOK_PASSWORD = os.getenv('FACEBOOK_PASSWORD', '')  # Optional: for Facebook login
 
 # Craigslist cities to monitor (NYC/NJ area)
 CRAIGSLIST_CITIES = [
@@ -49,52 +36,67 @@ CRAIGSLIST_CITIES = [
     "connecticut",  # Connecticut
 ]
 
-# Facebook Marketplace locations
-FACEBOOK_LOCATIONS = [
-    "New York, NY",
-    "Brooklyn, NY",
-    "Queens, NY",
-    "Bronx, NY",
-    "Staten Island, NY",
-    "Newark, NJ",
-    "Jersey City, NJ",
-    "Union, NJ",
-]
-
-# Search keywords for diabetic supplies and phones
-SEARCH_KEYWORDS = {
-    # Diabetic supplies
-    "dexcom_g6": "Dexcom G6",
-    "dexcom_g7": "Dexcom G7",
-    "omnipod_5": "Omnipod 5",
-    "omnipod_dash": "Omnipod DASH",
-    "freestyle_libre": "Freestyle Libre",
-    "test_strips": "Test Strips",
-    "glucose_monitor": "Glucose Monitor",
-    # Phones
-    "iphone_15": "iPhone 15",
-    "iphone_14_pro": "iPhone 14 Pro",
-    "iphone_13_pro": "iPhone 13 Pro",
-    "samsung_s23": "Samsung S23",
-    "pixel_8": "Pixel 8",
-    "oneplus_12": "OnePlus 12",
-}
-
-# Pricing targets (max buy price to achieve target margin)
+# Diabetic supplies pricing (Buy price, Sell price, Profit margin %)
 PRICING_TARGETS = {
-    "dexcom_g6": {"max_buy": 35, "resale_avg": 90, "margin": 0.60},
-    "dexcom_g7": {"max_buy": 40, "resale_avg": 100, "margin": 0.60},
-    "omnipod_5": {"max_buy": 50, "resale_avg": 120, "margin": 0.58},
-    "omnipod_dash": {"max_buy": 45, "resale_avg": 110, "margin": 0.59},
-    "freestyle_libre": {"max_buy": 25, "resale_avg": 65, "margin": 0.62},
-    "test_strips": {"max_buy": 15, "resale_avg": 45, "margin": 0.67},
-    "glucose_monitor": {"max_buy": 30, "resale_avg": 80, "margin": 0.63},
-    "iphone_15": {"max_buy": 450, "resale_avg": 650, "margin": 0.31},
-    "iphone_14_pro": {"max_buy": 350, "resale_avg": 550, "margin": 0.36},
-    "iphone_13_pro": {"max_buy": 280, "resale_avg": 450, "margin": 0.38},
-    "samsung_s23": {"max_buy": 300, "resale_avg": 500, "margin": 0.40},
-    "pixel_8": {"max_buy": 320, "resale_avg": 550, "margin": 0.42},
-    "oneplus_12": {"max_buy": 280, "resale_avg": 480, "margin": 0.42},
+    # Dexcom G6
+    "dexcom_g6_3pk_gs": {"keyword": "Dexcom G6 3 pack", "max_buy": 110, "resale": 150, "margin": 0.27},
+    "dexcom_g6_3pk_oe": {"keyword": "Dexcom G6 3 pack OE", "max_buy": 150, "resale": 200, "margin": 0.25},
+    "dexcom_g6_3pk_or": {"keyword": "Dexcom G6 3 pack OR", "max_buy": 150, "resale": 200, "margin": 0.25},
+    "dexcom_g6_3pk_om": {"keyword": "Dexcom G6 3 pack OM", "max_buy": 135, "resale": 180, "margin": 0.25},
+    "dexcom_g6_receiver": {"keyword": "Dexcom G6 receiver", "max_buy": 95, "resale": 127, "margin": 0.25},
+    "dexcom_g6_single": {"keyword": "Dexcom G6 single", "max_buy": 22, "resale": 30, "margin": 0.27},
+    "dexcom_g6_transmitter": {"keyword": "Dexcom G6 transmitter", "max_buy": 105, "resale": 140, "margin": 0.25},
+    
+    # Dexcom G7
+    "dexcom_g7_15day_010": {"keyword": "Dexcom G7 010", "max_buy": 90, "resale": 120, "margin": 0.25},
+    "dexcom_g7_15day_011": {"keyword": "Dexcom G7 011", "max_buy": 75, "resale": 100, "margin": 0.25},
+    "dexcom_g7_15day_012": {"keyword": "Dexcom G7 012", "max_buy": 75, "resale": 100, "margin": 0.25},
+    "dexcom_g7_15day_013": {"keyword": "Dexcom G7 013", "max_buy": 75, "resale": 100, "margin": 0.25},
+    "dexcom_g7_15day_016": {"keyword": "Dexcom G7 016", "max_buy": 65, "resale": 85, "margin": 0.24},
+    "dexcom_g7_1pk_018": {"keyword": "Dexcom G7 018", "max_buy": 65, "resale": 89, "margin": 0.27},
+    "dexcom_g7_1pk_012": {"keyword": "Dexcom G7 1pk 012", "max_buy": 65, "resale": 89, "margin": 0.27},
+    "dexcom_g7_1pk_011": {"keyword": "Dexcom G7 1pk 011", "max_buy": 65, "resale": 84, "margin": 0.23},
+    "dexcom_g7_1pk_013": {"keyword": "Dexcom G7 1pk 013", "max_buy": 55, "resale": 75, "margin": 0.27},
+    "dexcom_g7_1pk_030": {"keyword": "Dexcom G7 1pk 030", "max_buy": 40, "resale": 50, "margin": 0.20},
+    "dexcom_g7_receiver": {"keyword": "Dexcom G7 receiver", "max_buy": 110, "resale": 145, "margin": 0.24},
+    "dexcom_transmitter": {"keyword": "Dexcom transmitter", "max_buy": 80, "resale": 110, "margin": 0.27},
+    "stelo_2pack": {"keyword": "Stelo 2 pack", "max_buy": 30, "resale": 40, "margin": 0.25},
+    "stelo_1pack": {"keyword": "Stelo 1 pack", "max_buy": 11, "resale": 15, "margin": 0.27},
+    
+    # Omnipod
+    "omnipod_dash_pdm": {"keyword": "Omnipod Dash PDM", "max_buy": 75, "resale": 102, "margin": 0.27},
+    "omnipod_dash_10pack": {"keyword": "Omnipod Dash 10 pack", "max_buy": 145, "resale": 195, "margin": 0.26},
+    "omnipod_dash_5pack": {"keyword": "Omnipod Dash 5 pack", "max_buy": 105, "resale": 140, "margin": 0.25},
+    "omnipod_5_pdm": {"keyword": "Omnipod 5 PDM", "max_buy": 85, "resale": 114, "margin": 0.26},
+    "omnipod_5_5pack_g6g7": {"keyword": "Omnipod 5 5 pack G6", "max_buy": 160, "resale": 215, "margin": 0.26},
+    "omnipod_5_5pack_libre": {"keyword": "Omnipod 5 5 pack Libre", "max_buy": 155, "resale": 204, "margin": 0.24},
+    "omnipod_5_10pack": {"keyword": "Omnipod 5 10 pack", "max_buy": 290, "resale": 390, "margin": 0.26},
+    "omnipod_10pack": {"keyword": "Omnipod 10 pack", "max_buy": 110, "resale": 144, "margin": 0.24},
+    "omnipod_5pack": {"keyword": "Omnipod 5 pack", "max_buy": 65, "resale": 85, "margin": 0.24},
+    "omnipod_loose": {"keyword": "Omnipod loose sensor", "max_buy": 16, "resale": 22, "margin": 0.27},
+    
+    # Freestyle Libre
+    "freestyle_libre_14day": {"keyword": "Freestyle Libre 14 day", "max_buy": 40, "resale": 51, "margin": 0.22},
+    "freestyle_libre_2": {"keyword": "Freestyle Libre 2", "max_buy": 40, "resale": 51, "margin": 0.22},
+    "freestyle_libre_2_plus": {"keyword": "Freestyle Libre 2 PLUS", "max_buy": 40, "resale": 51, "margin": 0.22},
+    "freestyle_libre_3": {"keyword": "Freestyle Libre 3", "max_buy": 40, "resale": 50, "margin": 0.20},
+    "freestyle_libre_3_plus": {"keyword": "Freestyle Libre 3 PLUS", "max_buy": 40, "resale": 50, "margin": 0.20},
+    "freestyle_libre_reader": {"keyword": "Freestyle Libre reader", "max_buy": 40, "resale": 51, "margin": 0.22},
+    
+    # Medtronic
+    "medtronic_770": {"keyword": "Medtronic 770 pump", "max_buy": 260, "resale": 350, "margin": 0.26},
+    "medtronic_780g": {"keyword": "Medtronic 780g pump", "max_buy": 450, "resale": 600, "margin": 0.25},
+    "medtronic_guardian": {"keyword": "Medtronic Guardian", "max_buy": 60, "resale": 80, "margin": 0.25},
+    "medtronic_mio": {"keyword": "Medtronic Mio", "max_buy": 30, "resale": 40, "margin": 0.25},
+    
+    # Test Strips
+    "test_strips_accu_chek": {"keyword": "Accu Chek Active", "max_buy": 8, "resale": 11, "margin": 0.27},
+    "test_strips_accuchek_100": {"keyword": "Accuchek Guide 100", "max_buy": 19, "resale": 25, "margin": 0.24},
+    "test_strips_accuchek_50": {"keyword": "Accuchek Guide 50", "max_buy": 9, "resale": 12, "margin": 0.25},
+    "test_strips_aviva_100": {"keyword": "Aviva 100", "max_buy": 45, "resale": 59, "margin": 0.24},
+    "test_strips_aviva_50": {"keyword": "Aviva 50", "max_buy": 25, "resale": 36, "margin": 0.30},
+    "test_strips_contour": {"keyword": "Contour", "max_buy": 35, "resale": 44, "margin": 0.21},
+    "test_strips_freestyle": {"keyword": "Freestyle test strips", "max_buy": 25, "resale": 34, "margin": 0.27},
 }
 
 # Track found deals to avoid duplicates
@@ -122,262 +124,114 @@ def send_email(subject, body):
         logger.error(f"❌ Email error: {e}")
         return False
 
-def scrape_craigslist(city, keyword, keyword_id):
+def scrape_craigslist(city, keyword, keyword_id, max_buy, resale, margin):
     """Scrape Craigslist RSS feed for listings"""
     try:
-        # Properly encode the search query
-        encoded_keyword = quote(keyword)
-        url = f"https://{city}.craigslist.org/search/sss?query={encoded_keyword}&sort=date&format=rss"
+        # Craigslist RSS feed URL
+        url = f"https://{city}.craigslist.org/search/sss?format=rss&query={quote(keyword)}"
         
         feed = feedparser.parse(url)
-        deals = []
+        deals_found = []
         
-        if feed.entries:
-            for entry in feed.entries:
+        for entry in feed.entries[:10]:  # Check latest 10 listings
+            title = entry.title.lower()
+            price_str = entry.title.split('$')[-1].split()[0] if '$' in entry.title else None
+            
+            if price_str:
                 try:
-                    title = entry.get('title', '')
-                    price_text = entry.get('summary', '')
-                    link = entry.get('link', '')
+                    price = float(price_str)
+                    deal_id = f"{city}_{keyword_id}_{entry.link}"
                     
-                    # Extract price from title (format: "$XXX")
-                    price = None
-                    if '$' in title:
-                        price_str = title.split('$')[1].split()[0]
-                        try:
-                            price = float(price_str)
-                        except:
-                            pass
-                    
-                    if price and keyword_id in PRICING_TARGETS:
-                        target = PRICING_TARGETS[keyword_id]
-                        max_buy = target['max_buy']
-                        resale_avg = target['resale_avg']
-                        margin = target['margin']
+                    # Check if this is a good deal
+                    if price <= max_buy and deal_id not in FOUND_DEALS:
+                        profit = resale - price
+                        actual_margin = (profit / resale) * 100
                         
-                        # Check if price is below our target
-                        if price <= max_buy:
-                            profit = resale_avg - price
-                            profit_margin = (profit / resale_avg) * 100
-                            
-                            deal_id = f"craigslist_{city}_{keyword_id}_{price}_{title[:20]}"
-                            if deal_id not in FOUND_DEALS:
-                                FOUND_DEALS.add(deal_id)
-                                deals.append({
-                                    'title': title,
-                                    'price': price,
-                                    'max_buy': max_buy,
-                                    'resale_avg': resale_avg,
-                                    'profit': profit,
-                                    'margin': profit_margin,
-                                    'location': city,
-                                    'link': link,
-                                    'keyword': keyword,
-                                    'platform': 'Craigslist'
-                                })
-                except Exception as e:
-                    logger.debug(f"Error parsing entry: {e}")
-        
-        return deals
-    except Exception as e:
-        logger.error(f"❌ Craigslist scrape error for {city}/{keyword}: {e}")
-        return []
-
-def scrape_facebook_marketplace(keyword, keyword_id):
-    """Scrape Facebook Marketplace for listings (requires Selenium)"""
-    if not SELENIUM_AVAILABLE:
-        logger.debug("Selenium not available for Facebook Marketplace")
-        return []
-    
-    deals = []
-    
-    try:
-        # Setup Chrome options for headless browsing
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        
-        # Facebook Marketplace search URL
-        search_url = f"https://www.facebook.com/marketplace/nyc/search?query={quote(keyword)}&sort=creation_time_descending"
-        
-        driver.get(search_url)
-        
-        # Wait for listings to load
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_all_elements_located((By.XPATH, "//div[@data-testid='marketplace_listing_item']"))
-            )
-        except:
-            logger.debug(f"No listings found for {keyword} on Facebook Marketplace")
-            driver.quit()
-            return deals
-        
-        # Extract listings
-        listings = driver.find_elements(By.XPATH, "//div[@data-testid='marketplace_listing_item']")
-        
-        for listing in listings[:5]:  # Check first 5 listings
-            try:
-                # Extract price
-                price_element = listing.find_element(By.XPATH, ".//span[@data-testid='marketplace_price']")
-                price_text = price_element.text.replace('$', '').replace(',', '')
-                price = float(price_text)
-                
-                # Extract title
-                title_element = listing.find_element(By.XPATH, ".//span[@data-testid='marketplace_title']")
-                title = title_element.text
-                
-                # Extract link
-                link_element = listing.find_element(By.XPATH, ".//a[@data-testid='marketplace_listing_link']")
-                link = link_element.get_attribute('href')
-                
-                if price and keyword_id in PRICING_TARGETS:
-                    target = PRICING_TARGETS[keyword_id]
-                    max_buy = target['max_buy']
-                    resale_avg = target['resale_avg']
-                    
-                    if price <= max_buy:
-                        profit = resale_avg - price
-                        profit_margin = (profit / resale_avg) * 100
+                        deals_found.append({
+                            'title': entry.title,
+                            'price': price,
+                            'max_buy': max_buy,
+                            'resale': resale,
+                            'profit': profit,
+                            'margin': actual_margin,
+                            'link': entry.link,
+                            'city': city,
+                            'keyword': keyword
+                        })
                         
-                        deal_id = f"facebook_{keyword_id}_{price}_{title[:20]}"
-                        if deal_id not in FOUND_DEALS:
-                            FOUND_DEALS.add(deal_id)
-                            deals.append({
-                                'title': title,
-                                'price': price,
-                                'max_buy': max_buy,
-                                'resale_avg': resale_avg,
-                                'profit': profit,
-                                'margin': profit_margin,
-                                'location': 'Facebook Marketplace',
-                                'link': link,
-                                'keyword': keyword,
-                                'platform': 'Facebook'
-                            })
-            except Exception as e:
-                logger.debug(f"Error parsing Facebook listing: {e}")
+                        FOUND_DEALS.add(deal_id)
+                except ValueError:
+                    pass
         
-        driver.quit()
+        return deals_found
     except Exception as e:
-        logger.debug(f"Facebook Marketplace scrape error for {keyword}: {e}")
-    
-    return deals
-
-def send_deal_alert(deal):
-    """Send email alert for a found deal"""
-    subject = f"🎯 {deal['platform']} Deal! {deal['keyword']} - ${deal['price']:.2f}"
-    
-    body = f"""
-    <html>
-        <body style="font-family: Arial, sans-serif;">
-            <h2 style="color: #2ecc71;">🎯 New Deal Found on {deal['platform']}!</h2>
-            
-            <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
-                <tr style="background-color: #f0f0f0;">
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Title</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">{deal['title']}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Price</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b style="color: #e74c3c;">${deal['price']:.2f}</b></td>
-                </tr>
-                <tr style="background-color: #f0f0f0;">
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Max Buy</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">${deal['max_buy']:.2f}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Resale Avg</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">${deal['resale_avg']:.2f}</td>
-                </tr>
-                <tr style="background-color: #f0f0f0;">
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Profit Potential</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b style="color: #27ae60;">${deal['profit']:.2f} ({deal['margin']:.1f}%)</b></td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Platform</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">{deal['platform']}</td>
-                </tr>
-                <tr style="background-color: #f0f0f0;">
-                    <td style="padding: 10px; border: 1px solid #ddd;"><b>Posted</b></td>
-                    <td style="padding: 10px; border: 1px solid #ddd;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-                </tr>
-            </table>
-            
-            <p style="margin-top: 20px;">
-                <a href="{deal['link']}" style="background-color: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
-                    View Listing →
-                </a>
-            </p>
-            
-            <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
-            <p style="color: #7f8c8d; font-size: 12px;">
-                Automated deal alert from Marketplace Monitor v3
-            </p>
-        </body>
-    </html>
-    """
-    
-    send_email(subject, body)
-
-def monitor_cycle():
-    """Run one monitoring cycle"""
-    logger.info("🚀 Marketplace Monitor v3 - Cloud Edition")
-    logger.info("📍 Monitoring Craigslist + Facebook Marketplace (NYC/NJ area)...")
-    
-    total_deals = 0
-    
-    # Monitor Craigslist
-    logger.info("🔍 Checking Craigslist...")
-    for city in CRAIGSLIST_CITIES:
-        for keyword_id, keyword in SEARCH_KEYWORDS.items():
-            deals = scrape_craigslist(city, keyword, keyword_id)
-            
-            if deals:
-                logger.info(f"✅ Craigslist {city.upper()}: Found {len(deals)} deal(s) for {keyword}")
-                for deal in deals:
-                    send_deal_alert(deal)
-                    total_deals += 1
-    
-    # Monitor Facebook Marketplace
-    if SELENIUM_AVAILABLE:
-        logger.info("🔍 Checking Facebook Marketplace...")
-        for keyword_id, keyword in SEARCH_KEYWORDS.items():
-            deals = scrape_facebook_marketplace(keyword, keyword_id)
-            
-            if deals:
-                logger.info(f"✅ Facebook: Found {len(deals)} deal(s) for {keyword}")
-                for deal in deals:
-                    send_deal_alert(deal)
-                    total_deals += 1
-    else:
-        logger.info("ℹ️ Facebook Marketplace monitoring requires Selenium (install with: pip install selenium)")
-    
-    if total_deals == 0:
-        logger.info("ℹ️ No deals found this cycle")
-    
-    logger.info(f"✅ Cycle complete. Total deals found: {total_deals}")
-    logger.info("⏳ Next check in 5 minutes...")
+        logger.error(f"❌ Error scraping {city} for {keyword}: {e}")
+        return []
 
 def main():
     """Main monitoring loop"""
-    logger.info("🚀 Starting Marketplace Monitor v3...")
-    logger.info(f"📧 Email notifications: {MONITOR_RECIPIENT}")
-    logger.info(f"📍 Monitoring: Craigslist + Facebook Marketplace")
+    logger.info("🚀 Marketplace Monitor v4 - Diabetic Supplies Edition")
+    logger.info("📍 Monitoring Craigslist (NYC/NJ area)")
+    logger.info(f"⏰ Check interval: 5 minutes")
     
     while True:
         try:
-            monitor_cycle()
-            time.sleep(300)  # Check every 5 minutes
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-            break
+            all_deals = []
+            
+            # Check each city and keyword combination
+            for city in CRAIGSLIST_CITIES:
+                logger.info(f"🔍 Checking {city}...")
+                
+                for keyword_id, pricing in PRICING_TARGETS.items():
+                    keyword = pricing['keyword']
+                    max_buy = pricing['max_buy']
+                    resale = pricing['resale']
+                    margin = pricing['margin']
+                    
+                    deals = scrape_craigslist(city, keyword, keyword_id, max_buy, resale, margin)
+                    all_deals.extend(deals)
+            
+            # Send email if deals found
+            if all_deals:
+                logger.info(f"✅ Found {len(all_deals)} deal(s)!")
+                
+                # Group deals by keyword for email
+                deals_by_keyword = {}
+                for deal in all_deals:
+                    keyword = deal['keyword']
+                    if keyword not in deals_by_keyword:
+                        deals_by_keyword[keyword] = []
+                    deals_by_keyword[keyword].append(deal)
+                
+                # Create email body
+                email_body = "<h2>🎉 New Deals Found!</h2>"
+                email_body += f"<p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>"
+                
+                for keyword, deals in deals_by_keyword.items():
+                    email_body += f"<h3>{keyword}</h3>"
+                    for deal in deals:
+                        email_body += f"""
+                        <div style="border: 1px solid #ddd; padding: 10px; margin: 5px 0;">
+                            <p><strong>{deal['title']}</strong></p>
+                            <p>💰 <strong>Price:</strong> ${deal['price']:.2f}</p>
+                            <p>📊 <strong>Max Buy:</strong> ${deal['max_buy']:.2f} | <strong>Resale:</strong> ${deal['resale']:.2f}</p>
+                            <p>💵 <strong>Profit:</strong> ${deal['profit']:.2f} ({deal['margin']:.1f}%)</p>
+                            <p>📍 <strong>City:</strong> {deal['city'].upper()}</p>
+                            <p><a href="{deal['link']}" target="_blank">View on Craigslist</a></p>
+                        </div>
+                        """
+                
+                send_email(f"🎉 {len(all_deals)} New Diabetic Supply Deal(s) Found!", email_body)
+            else:
+                logger.info("✅ No deals found this cycle")
+            
+            # Wait 5 minutes before next check
+            logger.info("⏳ Waiting 5 minutes for next check...")
+            time.sleep(300)
+            
         except Exception as e:
-            logger.error(f"❌ Error in monitoring cycle: {e}")
-            time.sleep(60)  # Wait 1 minute before retrying
+            logger.error(f"❌ Error in main loop: {e}")
+            time.sleep(300)
 
 if __name__ == "__main__":
     main()
