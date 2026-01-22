@@ -2,3 +2,4 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 feedparser==6.0.10
 selenium==4.15.2
+selenium>=4.0.0
